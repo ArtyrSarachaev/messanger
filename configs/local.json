@@ -1,0 +1,25 @@
+{
+    "kafka": {
+        "host": "127.0.0.1",
+        "port" : "9092"
+    },
+    "websocket_server" : {
+        "host": "127.0.0.1",
+        "port" : "8001"
+    },
+    "http_server":{
+        "host": "127.0.0.1",
+        "port": "8000"
+    },
+    "postgres": {
+        "host": "127.0.0.1",
+        "port": 5433,
+        "user": "user_pg",
+        "password": "password_pg",
+        "name_db": "db_pg",
+        "path_to_create_db": "../db_requests/create_db.sql",
+        "max_open_conns": 5,
+        "max_idle_conns": 5,
+        "lifetime_conn": 5
+    }
+}
