@@ -9,17 +9,21 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-const (
-	envLocalType = "local"
+/*
+	Logrus норм выбор, но самый пиздатый сейчас это go.uber.org/zap
+*/
 
+const (
 	loggerKey = "logger"
 )
 
+// New лучше все зависимости передавать явно, в таком коде гораздо проще разбираться
+// Так что получи env перед созданием логгера и передай в конструктор
 func New(ctx context.Context) *logrus.Logger {
 	var log = logrus.New()
 
-	switch env.GetEnv(ctx) {
-	case envLocalType:
+	switch env.GetEnv() {
+	case env.Local:
 		log.SetFormatter(&logrus.TextFormatter{
 			ForceColors:     true,
 			FullTimestamp:   true,
@@ -45,6 +49,8 @@ func New(ctx context.Context) *logrus.Logger {
 	return log
 }
 
+// LoggerFromContext -> FromContext. В коде будет красиво logger.FromContext
+// А это у вас такая практика класть логгер в контекст? Или ты где-то увидел
 func LoggerFromContext(ctx context.Context) *logrus.Logger {
 	if logger, ok := ctx.Value(loggerKey).(*logrus.Logger); ok {
 		return logger

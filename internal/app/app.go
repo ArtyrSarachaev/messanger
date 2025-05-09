@@ -20,8 +20,8 @@ func Run(ctx context.Context, config config.Config) {
 	// db pool
 	poolPG, err := postgres.NewPool(ctx, config)
 	if err != nil {
-		log.Error(err)
-		panic(err)
+		// по идее то же самое, что и log.Error(err) + panic(err)
+		log.Fatal(err)
 	}
 	var isExist bool
 	if isExist, err = poolPG.CheckIsTableExists(ctx); err != nil {

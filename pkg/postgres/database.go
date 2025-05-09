@@ -20,7 +20,7 @@ type poolDB struct {
 	Pool *pgxpool.Pool
 }
 
-func NewPool(ctx context.Context, config config.Config) (poolDB, error) {
+func NewPool(ctx context.Context, config config.Config) (poolDB /*Возвращать приватную структуру из пакета - плохая практика*/, error) {
 	connString := fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=disable&pool_max_conns=10",
 		config.Postgres.UserName,
 		config.Postgres.Password,
@@ -28,11 +28,16 @@ func NewPool(ctx context.Context, config config.Config) (poolDB, error) {
 		config.Postgres.Port,
 		config.Postgres.NameDB)
 
+	// configConnect -> connectConfig так правильнее
 	configConnect, err := pgxpool.ParseConfig(connString)
 	if err != nil {
+		// Для вставки ошибки в fmt.Errorf() используется %w, а не %v.
+		// Тогда ошибку можно будет проверить через errors.Is()
 		return poolDB{}, fmt.Errorf("failed to parse conn string: %v", err)
 	}
 
+	// pgxpool.ParseConfig() парсит строчку вместе с этими параметрами
+	// и лучше все эти константы вынести в конфиг
 	configConnect.MaxConns = 10
 	configConnect.MinConns = 2
 	configConnect.MaxConnLifetime = 30 * time.Minute
@@ -44,12 +49,16 @@ func NewPool(ctx context.Context, config config.Config) (poolDB, error) {
 		return poolDB{}, fmt.Errorf("failed to create connection pool: %v", err)
 	}
 
+	// Ещё раз декларируешь err. Правильнее сделать "=" вместо ":="
 	if err := pool.Ping(ctx); err != nil {
 		return poolDB{}, fmt.Errorf("failed to ping database: %v", err)
 	}
 
 	return poolDB{Pool: pool}, nil
 }
+
+// Коммент ненужный удаляй или помечай TODO или FIXME
+// Обязательно с пояснением
 
 /*
 	func New(config config.Config) *database {
@@ -67,7 +76,11 @@ func NewPool(ctx context.Context, config config.Config) (poolDB, error) {
 		return &database{DB: db}
 	}
 */
-// проверяем существуют таблица или нет. Костыль для тестового задания
+
+// Поясняющий комментарий в глобальной области пакета должен начинаться с названия метода, структуры или
+// переменной, которую ты описываешь
+
+// CheckIsTableExists проверяем существует таблица или нет. Костыль для тестового задания
 func (p *poolDB) CheckIsTableExists(ctx context.Context) (bool, error) {
 	var result bool
 	query := fmt.Sprintf(`SELECT EXISTS (
@@ -97,3 +110,9 @@ func (p *poolDB) CreateTables(ctx context.Context, pathToCreateDatabase string) 
 
 	return nil
 }
+
+/**
+
+Короче, то, что ты в методах CheckIsTableExists и CreateTables пытаешься велосипед изобрести, это здорово.
+Но для этого есть специальных механизм - называется миграции. Написал в comments.md в корне
+*/
