@@ -8,18 +8,16 @@ import (
 )
 
 type httpServer struct {
-	userLogic entity.UserLogic
+	userLogic    entity.UserLogic
+	messageLogic entity.MessageLogic
 }
 
-func StartHttpServer(userLogic entity.UserLogic) *echo.Echo {
+func Server(userLogic entity.UserLogic, messageLogic entity.MessageLogic) *echo.Echo {
 	e := echo.New()
 
 	NewAuth(e.Group("/"), userLogic)
-
-	NewUserHandler(e.Group("/user",
-		middleware.JWTMiddleware,
-		middleware.AddLoggerInHandlerContext),
-		userLogic)
+	NewUserHandler(e.Group("/user", middleware.JWTMiddleware), userLogic)
+	NewMessageHandler(e.Group("/messages", middleware.JWTMiddleware), messageLogic)
 
 	return e
 }

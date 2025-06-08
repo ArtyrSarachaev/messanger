@@ -35,7 +35,12 @@ func JWTMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
 			return echo.NewHTTPError(http.StatusUnauthorized, "unknown user")
 		}
 
-		ctx := context.WithValue(c.Request().Context(), entity.UserIDKey, claims[entity.UserIDKey].(float64))
+		userID, ok := claims[entity.UserIDKey].(string)
+		if !ok {
+			return echo.NewHTTPError(http.StatusUnauthorized, "cant get username from jwt")
+		}
+
+		ctx := context.WithValue(c.Request().Context(), entity.UserIDKey, userID)
 
 		c.SetRequest(c.Request().WithContext(ctx))
 

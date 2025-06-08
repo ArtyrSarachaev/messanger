@@ -4,10 +4,10 @@ import (
 	"context"
 	"fmt"
 	"messanger/internal/entity"
-	"messanger/pkg/logger"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"go.uber.org/zap"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -19,24 +19,22 @@ func NewUserLogic(userRepository entity.UserRepository) entity.UserLogic {
 	return &userLogic{userRepository: userRepository}
 }
 
-func (u *userLogic) GetUserByFullName(ctx context.Context, userName string) (entity.User, error) {
-	user, err := u.userRepository.GetUserByName(ctx, userName)
-	if err != nil {
-		return entity.User{}, err
-	}
+func (u *userLogic) ByFullName(ctx context.Context, username string) (entity.User, error) {
+	return u.userRepository.ByName(ctx, username)
+}
 
-	return user, nil
+func (u *userLogic) ByUserID(ctx context.Context, userID string) (entity.User, error) {
+	return u.userRepository.ByUserID(ctx, userID)
 }
 
 func (u *userLogic) Login(ctx context.Context, user entity.User) (string, error) {
-	log := logger.LoggerFromContext(ctx)
-	userFromDb, err := u.userRepository.GetUserByName(ctx, user.Username)
+	log := zap.NewExample().Sugar()
+	userFromDb, err := u.userRepository.ByName(ctx, user.Username)
 	if err != nil {
 		return "", err
 	}
 	if userFromDb.Username == "" {
-		msg := fmt.Sprintf("user %s is not exist", user.Username)
-		log.Info(msg)
+		log.Infof("user %s is not exist", user.Username)
 		return "", nil
 	}
 
@@ -62,14 +60,13 @@ func (u *userLogic) Login(ctx context.Context, user entity.User) (string, error)
 }
 
 func (u *userLogic) Register(ctx context.Context, login entity.User) error {
-	log := logger.LoggerFromContext(ctx)
-	user, err := u.userRepository.GetUserByName(ctx, login.Username)
+	log := zap.NewExample().Sugar()
+	user, err := u.userRepository.ByName(ctx, login.Username)
 	if err != nil {
 		return err
 	}
 	if user.Username != "" {
-		msg := fmt.Sprintf("user %s is already exist", login.Username)
-		log.Info(msg)
+		log.Infof("user %s is already exist", login.Username)
 		return nil
 	}
 
@@ -79,7 +76,7 @@ func (u *userLogic) Register(ctx context.Context, login entity.User) error {
 	}
 	login.Password = string(hashedPassword)
 
-	err = u.userRepository.SaveUser(ctx, login)
+	err = u.userRepository.Save(ctx, login)
 	if err != nil {
 		return err
 	}

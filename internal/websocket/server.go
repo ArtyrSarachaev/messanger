@@ -7,14 +7,10 @@ import (
 	"github.com/labstack/echo/v4"
 )
 
-func StartWSServer(sendKafka entity.SendMessageBroker) *echo.Echo {
+func Server(sendKafka entity.MessageKafkaBroker, userLogic entity.UserLogic) *echo.Echo {
 	e := echo.New()
 
-	e.Use(
-		middleware.JWTMiddleware,
-		middleware.AddLoggerInHandlerContext,
-	)
-	NewStartWSHandlers(e.Group("/send"), sendKafka)
+	NewStartWSHandlers(e.Group("/send", middleware.JWTMiddleware), sendKafka, userLogic)
 
 	return e
 }

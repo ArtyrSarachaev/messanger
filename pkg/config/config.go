@@ -1,28 +1,30 @@
 package config
 
 import (
-	"context"
 	"encoding/json"
 	"os"
 )
 
 const (
-	envKey = "env"
+	localEnvType = "local"
+
+	envKey = "ENV"
 )
 
-func InitConfig(ctx context.Context, pathToConfig string) (Config, error) {
+func InitConfig(configPath string) (Config, error) {
 	config := Config{}
-	data, err := os.ReadFile(pathToConfig)
-	if err != nil {
-		return config, err
-	}
+	switch os.Getenv(envKey) {
+	case localEnvType:
+		data, err := os.ReadFile(configPath)
+		if err != nil {
+			return config, err
+		}
 
-	err = json.Unmarshal(data, &config)
-	if err != nil {
-		return config, err
+		err = json.Unmarshal(data, &config)
+		if err != nil {
+			return config, err
+		}
 	}
-
-	ctx = context.WithValue(ctx, envKey, os.Getenv("ENV"))
 
 	return config, nil
 }

@@ -3,34 +3,55 @@ package broker
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"messanger/internal/entity"
-	"messanger/pkg/logger"
 
+	"github.com/pkg/errors"
 	"github.com/segmentio/kafka-go"
 )
 
-type messageReader struct {
-	r *kafka.Reader
+type Reader struct {
+	messageLogic entity.MessageLogic
+	reader       *kafka.Reader
 }
 
-func StartMessageKafkaReader(ctx context.Context, address string) error {
-	log := logger.LoggerFromContext(ctx)
-	reader := kafka.NewReader(kafka.ReaderConfig{
-		Brokers: []string{address},
-		Topic:   messageSendTopic,
-	})
-
+func (m *Reader) Shutdown(ctx context.Context) error {
 	for {
-		msgB, err := reader.ReadMessage(ctx)
-		if err != nil {
-			log.Errorf("cant read message from topic %s, with error %v", messageSendTopic, err)
-			break
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
 		}
-		var message entity.Message
-		json.Unmarshal(msgB.Value, &message)
-		fmt.Println(message)
 	}
+}
 
-	return reader.Close()
+func NewReader(ctx context.Context, address string, msgLogic entity.MessageLogic) *Reader {
+	return &Reader{
+		messageLogic: msgLogic,
+		reader: kafka.NewReader(kafka.ReaderConfig{
+			Brokers:     []string{address},
+			Topic:       messageSendTopic,
+			GroupID:     "my-group",
+			StartOffset: kafka.LastOffset,
+		})}
+}
+
+func (m *Reader) Start(ctx context.Context) error {
+	for {
+		msgKafka, err := m.reader.ReadMessage(ctx)
+		if err != nil {
+			return errors.Wrapf(err, "cant read message from topic %s", messageSendTopic)
+		}
+
+		if len(msgKafka.Value) > 0 {
+			var message entity.Message
+			err = json.Unmarshal(msgKafka.Value, &message)
+			if err != nil {
+				return errors.Wrapf(err, "cant unmarshal message from topic %s", messageSendTopic)
+			}
+
+			err = m.messageLogic.Save(ctx, message)
+			if err != nil {
+				return errors.Wrapf(err, "cant save message %v", message)
+			}
+		}
+	}
 }

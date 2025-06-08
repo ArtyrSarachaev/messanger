@@ -19,12 +19,12 @@ func NewUserHandler(rg *echo.Group, userLogic entity.UserLogic) {
 func (u *UserHandler) getUser(c echo.Context) error {
 	ctx := c.Request().Context()
 
-	var user entity.User
-	if err := c.Bind(&user); err != nil {
-		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
+	username := c.QueryParam("username")
+	if username == "" {
+		return echo.NewHTTPError(http.StatusBadRequest)
 	}
 
-	respUser, err := u.userLogic.GetUserByFullName(ctx, user.Username)
+	respUser, err := u.userLogic.ByFullName(ctx, username)
 	if err != nil {
 		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
 	}
@@ -34,6 +34,6 @@ func (u *UserHandler) getUser(c echo.Context) error {
 	}
 
 	return c.JSON(http.StatusOK, map[string]string{
-		"userName": user.Username,
+		"username": respUser.Username,
 	})
 }

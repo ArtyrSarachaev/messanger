@@ -4,10 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"messanger/internal/entity"
-	"messanger/pkg/logger"
 
-	env "messanger/pkg/environment"
-
+	"github.com/pkg/errors"
 	"github.com/segmentio/kafka-go"
 )
 
@@ -15,7 +13,7 @@ type messageWriter struct {
 	w *kafka.Writer
 }
 
-func NewMessageKafkaWriter(address string) entity.SendMessageBroker {
+func NewWriter(address string) entity.MessageKafkaBroker {
 	return &messageWriter{
 		w: &kafka.Writer{
 			RequiredAcks:           kafka.RequireAll,
@@ -25,23 +23,20 @@ func NewMessageKafkaWriter(address string) entity.SendMessageBroker {
 	}
 }
 
-func (k *messageWriter) SendMessage(ctx context.Context, message entity.Message) error {
-	log := logger.LoggerFromContext(ctx)
-	//todo надо сделать человеческое реквест айди
-	userID, err := json.Marshal(env.GetUserId(ctx))
-	if err != nil {
-		log.Errorf("cant marshal key %v, with error %v", env.GetUserId(ctx), err)
-		return err
+func (k *messageWriter) Send(ctx context.Context, message entity.Message) error {
+	senderID, ok := ctx.Value(entity.UserIDKey).(string)
+	if !ok {
+		return errors.New("cant get username from context")
 	}
+	message.SenderID = senderID
 	messageToKafka, err := json.Marshal(message)
 	if err != nil {
-		log.Errorf("cant marshal message %v, with error %v", message, err)
-		return err
+		return errors.Wrapf(err, "cant marshal message %v", message)
 	}
 	k.w.Topic = messageSendTopic
 	return k.w.WriteMessages(ctx,
 		kafka.Message{
-			Key:   userID,
+			Key:   []byte(senderID),
 			Value: messageToKafka,
 		})
 }

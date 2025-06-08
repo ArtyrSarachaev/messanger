@@ -1,9 +1,6 @@
 package repository
 
 // errors
-const (
-	cantExecQueryWithError = "cant exec query '%s', with error %v"
-)
 
 // usersTable
 const (
@@ -17,4 +14,9 @@ const (
 // messagesTable
 const (
 	messagesTable = "messages"
+
+	senderIdColumn   = "sender_id"
+	receiverIdColumn = "receiver_id"
+	textColumn       = "text"
+	timeToSendColumn = "time_to_send"
 )

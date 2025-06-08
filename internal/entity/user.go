@@ -22,13 +22,14 @@ const (
 )
 
 type User struct {
-	ID       int64  `json:"-"`
-	Username string `json:"username"`
-	Password string `json:"password"`
+	ID        string    `json:"-"`
+	Username  string    `json:"username"`
+	Password  string    `json:"password"`
+	CreatedAt time.Time `json:"created"`
 }
 
 type Claims struct {
-	UserID int64 `json:"user_id"`
+	UserID string `json:"user_id"`
 	jwt.RegisteredClaims
 }
 
@@ -39,12 +40,14 @@ type UserWS struct {
 }
 
 type UserLogic interface {
-	GetUserByFullName(ctx context.Context, userName string) (User, error)
+	ByFullName(ctx context.Context, userName string) (User, error)
 	Register(ctx context.Context, login User) error
 	Login(ctx context.Context, user User) (string, error)
+	ByUserID(ctx context.Context, userID string) (User, error)
 }
 
 type UserRepository interface {
-	SaveUser(ctx context.Context, userLogin User) error
-	GetUserByName(ctx context.Context, userName string) (User, error)
+	Save(ctx context.Context, userLogin User) error
+	ByName(ctx context.Context, userName string) (User, error)
+	ByUserID(ctx context.Context, userID string) (User, error)
 }

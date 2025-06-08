@@ -2,14 +2,15 @@ package postgres
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
-	"os"
 	"time"
 
-	"messanger/internal/entity"
 	"messanger/pkg/config"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/pkg/errors"
 )
 
 const (
@@ -51,49 +52,18 @@ func NewPool(ctx context.Context, config config.Config) (poolDB, error) {
 	return poolDB{Pool: pool}, nil
 }
 
-/*
-	func New(config config.Config) *database {
-		postgres := config.Postgres
-		connectStringToDB := postgres.СreateConnectionString()
-		db, err := sql.Open("postgres", connectStringToDB)
-		if err != nil {
-			panic(err)
-		}
+func NewDB(ctx context.Context, config config.Config) (*sql.DB, error) {
+	connString := fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=disable",
+		config.Postgres.UserName,
+		config.Postgres.Password,
+		config.Postgres.Host,
+		config.Postgres.Port,
+		config.Postgres.NameDB)
 
-		db.SetMaxOpenConns(int(postgres.MaxOpenConns))
-		db.SetMaxIdleConns(int(postgres.MaxIdleConns))
-		db.SetConnMaxLifetime(time.Duration(postgres.LifetimeConn) * time.Minute)
-
-		return &database{DB: db}
-	}
-*/
-// проверяем существуют таблица или нет. Костыль для тестового задания
-func (p *poolDB) CheckIsTableExists(ctx context.Context) (bool, error) {
-	var result bool
-	query := fmt.Sprintf(`SELECT EXISTS (
-            SELECT 1
-            FROM information_schema.tables
-            WHERE table_schema = 'public'
-            AND (table_name = '%s'
-			OR table_name = '%s'))`,
-		entity.MessagesTable, entity.UsersTable)
-	err := p.Pool.QueryRow(ctx, query).Scan(&result)
+	db, err := sql.Open("pgx", connString)
 	if err != nil {
-		return false, fmt.Errorf(cantExecQueryWithError, query, err)
-	}
-	return result, nil
-}
-
-func (p *poolDB) CreateTables(ctx context.Context, pathToCreateDatabase string) error {
-	query, err := os.ReadFile(pathToCreateDatabase)
-	if err != nil {
-		return fmt.Errorf("cant read from path '%s', with error %v", pathToCreateDatabase, err)
+		return nil, errors.Wrap(err, "cant open connection for postgres")
 	}
 
-	_, err = p.Pool.Exec(ctx, string(query))
-	if err != nil {
-		return fmt.Errorf(cantExecQueryWithError, pathToCreateDatabase, err)
-	}
-
-	return nil
+	return db, nil
 }
