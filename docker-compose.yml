@@ -1,44 +1,91 @@
-version: "3.9"
+x-app-env: &app-env
+  CONFIG_PATH: /app/configs/local.json
+  POSTGRES_HOST: postgres
+  POSTGRES_PORT: "5432"
+  POSTGRES_USER: user_pg
+  POSTGRES_PASSWORD: password_pg
+  POSTGRES_DB: db_pg
+  KAFKA_BROKERS: kafka:29092
+  JWT_SECRET: ${JWT_SECRET:-local-dev-secret-change-me}
+
 services:
   postgres:
-    image: postgres:latest
+    image: postgres:16-alpine
     container_name: messanger_db
     environment:
-      POSTGRES_DB: "db_pg"
-      POSTGRES_USER: "user_pg"
-      POSTGRES_PASSWORD: "password_pg"
+      POSTGRES_DB: db_pg
+      POSTGRES_USER: user_pg
+      POSTGRES_PASSWORD: password_pg
     ports:
       - "5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user_pg -d db_pg"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   zookeeper:
-    image: bitnami/zookeeper:latest
+    image: confluentinc/cp-zookeeper:7.6.1
     environment:
-      - ALLOW_ANONYMOUS_LOGIN=yes
+      ZOOKEEPER_CLIENT_PORT: 2181
+
   kafka:
-    image: confluentinc/cp-kafka:latest
-    environment:
-      - KAFKA_ZOOKEEPER_CONNECT=zookeeper:2181
-      - KAFKA_LISTENERS=PLAINTEXT://0.0.0.0:9092,PLAINTEXT_HOST://0.0.0.0:29092
-      - KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://127.0.0.1:9092,PLAINTEXT_HOST://kafka:29092
-      - KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
-      - KAFKA_AUTO_CREATE_TOPICS_ENABLE=true
-      - KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1
-    ports:
-      - "29092:29092"
-      - "9092:9092"
+    image: confluentinc/cp-kafka:7.6.1
     depends_on:
       - zookeeper
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      # INTERNAL — для контейнеров внутри docker-сети, EXTERNAL — для запуска приложения с хоста.
+      KAFKA_LISTENERS: INTERNAL://0.0.0.0:29092,EXTERNAL://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:29092,EXTERNAL://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-topics --bootstrap-server localhost:29092 --list"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+
+  migrate:
+    build: .
+    entrypoint: ["/app/migrate"]
+    environment:
+      <<: *app-env
+      MIGRATIONS_ACTION: up
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  app:
+    build: .
+    environment: *app-env
+    ports:
+      - "8000:8000"
+      - "8001:8001"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      kafka:
+        condition: service_healthy
+    restart: unless-stopped
+
   kafka-ui:
-      container_name: kafka-ui
-      image: provectuslabs/kafka-ui:latest
-      ports:
-        - 8080:8080
-      environment:
-        - DYNAMIC_CONFIG_ENABLED='true'
-        - KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS=kafka:29092
-        - KAFKA_CLUSTERS_0_NAME=local
-      depends_on:
-        - kafka
+    image: provectuslabs/kafka-ui:latest
+    profiles: ["tools"]
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+    depends_on:
+      - kafka
+
 volumes:
   postgres_data:

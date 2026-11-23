@@ -10,59 +10,48 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	_ "github.com/jackc/pgx/v5/stdlib"
-	"github.com/pkg/errors"
 )
 
-const (
-	cantExecQueryWithError = "cant exec query '%s', with error: %v"
-)
+// NewPool создаёт пул соединений pgx и проверяет доступность базы.
+func NewPool(ctx context.Context, cfg config.Postgres) (*pgxpool.Pool, error) {
+	poolCfg, err := pgxpool.ParseConfig(cfg.DSN())
+	if err != nil {
+		return nil, fmt.Errorf("parse postgres dsn: %w", err)
+	}
 
-type poolDB struct {
-	Pool *pgxpool.Pool
+	poolCfg.MaxConns = 10
+	if cfg.MaxConns > 0 {
+		poolCfg.MaxConns = cfg.MaxConns
+	}
+	poolCfg.MinConns = 2
+	if cfg.MinConns > 0 {
+		poolCfg.MinConns = cfg.MinConns
+	}
+	poolCfg.MaxConnLifetime = 30 * time.Minute
+	poolCfg.MaxConnIdleTime = 10 * time.Minute
+	poolCfg.HealthCheckPeriod = time.Minute
+
+	pool, err := pgxpool.NewWithConfig(ctx, poolCfg)
+	if err != nil {
+		return nil, fmt.Errorf("create postgres pool: %w", err)
+	}
+
+	pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	if err := pool.Ping(pingCtx); err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("ping postgres: %w", err)
+	}
+
+	return pool, nil
 }
 
-func NewPool(ctx context.Context, config config.Config) (poolDB, error) {
-	connString := fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=disable&pool_max_conns=10",
-		config.Postgres.UserName,
-		config.Postgres.Password,
-		config.Postgres.Host,
-		config.Postgres.Port,
-		config.Postgres.NameDB)
-
-	configConnect, err := pgxpool.ParseConfig(connString)
+// NewDB открывает соединение через database/sql — нужно для goose.
+func NewDB(cfg config.Postgres) (*sql.DB, error) {
+	db, err := sql.Open("pgx", cfg.DSN())
 	if err != nil {
-		return poolDB{}, fmt.Errorf("failed to parse conn string: %v", err)
-	}
-
-	configConnect.MaxConns = 10
-	configConnect.MinConns = 2
-	configConnect.MaxConnLifetime = 30 * time.Minute
-	configConnect.MaxConnIdleTime = 10 * time.Minute
-	configConnect.HealthCheckPeriod = 5 * time.Minute
-
-	pool, err := pgxpool.NewWithConfig(ctx, configConnect)
-	if err != nil {
-		return poolDB{}, fmt.Errorf("failed to create connection pool: %v", err)
-	}
-
-	if err := pool.Ping(ctx); err != nil {
-		return poolDB{}, fmt.Errorf("failed to ping database: %v", err)
-	}
-
-	return poolDB{Pool: pool}, nil
-}
-
-func NewDB(ctx context.Context, config config.Config) (*sql.DB, error) {
-	connString := fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=disable",
-		config.Postgres.UserName,
-		config.Postgres.Password,
-		config.Postgres.Host,
-		config.Postgres.Port,
-		config.Postgres.NameDB)
-
-	db, err := sql.Open("pgx", connString)
-	if err != nil {
-		return nil, errors.Wrap(err, "cant open connection for postgres")
+		return nil, fmt.Errorf("open postgres: %w", err)
 	}
 
 	return db, nil

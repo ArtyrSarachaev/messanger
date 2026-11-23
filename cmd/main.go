@@ -1,18 +1,23 @@
 package main
 
 import (
+	"os"
+
 	"messanger/internal/app"
 	"messanger/pkg/config"
 )
 
-const (
-	pathToConfig = "../configs/local.json"
-)
-
 func main() {
-	config, err := config.InitConfig(pathToConfig)
+	log := app.NewLogger()
+
+	cfg, err := config.Load()
 	if err != nil {
-		panic(err)
+		log.Error("load config", "error", err)
+		os.Exit(1)
 	}
-	app.Run(config)
+
+	if err := app.Run(cfg, log); err != nil {
+		log.Error("application stopped with error", "error", err)
+		os.Exit(1)
+	}
 }

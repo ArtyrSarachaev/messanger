@@ -2,87 +2,109 @@ package app
 
 import (
 	"context"
-	kafka "messanger/internal/broker"
-	httpHandler "messanger/internal/http"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	"messanger/internal/auth"
+	"messanger/internal/broker"
+	httpserver "messanger/internal/http"
 	"messanger/internal/logic"
 	"messanger/internal/repository"
 	"messanger/internal/websocket"
 	"messanger/pkg/config"
 	"messanger/pkg/postgres"
-	"os"
-	"os/signal"
-	"syscall"
 
-	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
 )
 
-func Run(config config.Config) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+const shutdownTimeout = 10 * time.Second
 
-	log := zap.NewExample()
-
-	// db pool
-	poolPG, err := postgres.NewPool(ctx, config)
-	if err != nil {
-		log.Sugar().Fatalf("cant create pool connections for postgres: %v", err)
+func Run(cfg config.Config, log *slog.Logger) error {
+	if err := cfg.Validate(); err != nil {
+		return fmt.Errorf("invalid config: %w", err)
 	}
 
-	defer poolPG.Pool.Close()
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
 
-	//repository
-	userRepository := repository.NewUserRepository(poolPG.Pool)
-	messageRepository := repository.NewMessageRepository(poolPG.Pool)
+	pool, err := postgres.NewPool(ctx, cfg.Postgres)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
 
-	//logic
-	userLogic := logic.NewUserLogic(userRepository)
-	messageLogic := logic.NewMessageLogic(messageRepository, userLogic)
+	tokens := auth.NewJWTManager(cfg.JWT.Secret, cfg.JWT.TTL)
 
-	go func() {
-		sigChan := make(chan os.Signal, 1)
-		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-		<-sigChan
-		cancel()
-	}()
+	userLogic := logic.NewUserLogic(repository.NewUserRepository(pool), tokens)
+	messageLogic := logic.NewMessageLogic(repository.NewMessageRepository(pool), userLogic)
+
+	producer := broker.NewProducer(cfg.Kafka.Brokers, cfg.Kafka.Topic)
+	defer closeWithLog(log, "kafka producer", producer.Close)
+
+	consumer := broker.NewConsumer(cfg.Kafka.Brokers, cfg.Kafka.Topic, cfg.Kafka.GroupID, messageLogic, log)
+	defer closeWithLog(log, "kafka consumer", consumer.Close)
+
+	httpSrv := httpserver.NewServer(userLogic, messageLogic, tokens)
+	wsSrv := websocket.NewServer(userLogic, producer, tokens, log)
 
 	g, gCtx := errgroup.WithContext(ctx)
 
-	//broker
-	kafkaWriter := kafka.NewWriter(config.Kafka.Host + ":" + config.Kafka.Port)
 	g.Go(func() error {
-		kafkaReader := kafka.NewReader(ctx, config.Kafka.Host+":"+config.Kafka.Port, messageLogic)
-		go func() {
-			<-gCtx.Done()
-			_ = kafkaReader.Shutdown(context.Background())
-		}()
-		log.Info("kafka reader is starting")
-		return kafkaReader.Start(ctx)
-	})
-
-	//servers
-	g.Go(func() error {
-		httpServer := httpHandler.Server(userLogic, messageLogic)
-		go func() {
-			<-gCtx.Done()
-			_ = httpServer.Shutdown(context.Background())
-		}()
-		log.Info("http server is starting")
-		return httpServer.Start(config.HttpServer.Host + ":" + config.HttpServer.Port)
+		log.Info("kafka consumer started", "topic", cfg.Kafka.Topic)
+		return consumer.Run(gCtx)
 	})
 
 	g.Go(func() error {
-		wsServer := websocket.Server(kafkaWriter, userLogic)
-		go func() {
-			<-gCtx.Done()
-			_ = wsServer.Shutdown(context.Background())
-		}()
-		log.Info("web socket server is starting")
-		return wsServer.Start(config.WSServer.Host + ":" + config.WSServer.Port)
+		log.Info("http server started", "addr", cfg.HttpServer.Address())
+		return ignoreServerClosed(httpSrv.Start(cfg.HttpServer.Address()))
+	})
+
+	g.Go(func() error {
+		log.Info("websocket server started", "addr", cfg.WSServer.Address())
+		return ignoreServerClosed(wsSrv.Start(cfg.WSServer.Address()))
+	})
+
+	// Graceful shutdown: по сигналу или при падении любого компонента.
+	g.Go(func() error {
+		<-gCtx.Done()
+		log.Info("shutting down")
+
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+		defer cancel()
+
+		return errors.Join(
+			httpSrv.Shutdown(shutdownCtx),
+			wsSrv.Shutdown(shutdownCtx),
+		)
 	})
 
 	if err := g.Wait(); err != nil {
-		log.Sugar().Errorf("Server error: %v", err)
+		return err
 	}
-	log.Info("All servers is stopped gracefully")
+
+	log.Info("stopped gracefully")
+	return nil
+}
+
+func ignoreServerClosed(err error) error {
+	if errors.Is(err, http.ErrServerClosed) {
+		return nil
+	}
+	return err
+}
+
+func closeWithLog(log *slog.Logger, name string, closeFn func() error) {
+	if err := closeFn(); err != nil {
+		log.Warn("close failed", "component", name, "error", err)
+	}
+}
+
+func NewLogger() *slog.Logger {
+	return slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 }

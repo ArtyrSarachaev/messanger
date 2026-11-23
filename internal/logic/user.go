@@ -2,84 +2,96 @@ package logic
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"messanger/internal/entity"
-	"time"
+	"strings"
+	"unicode/utf8"
 
-	"github.com/golang-jwt/jwt/v5"
-	"go.uber.org/zap"
+	"messanger/internal/entity"
+
 	"golang.org/x/crypto/bcrypt"
 )
 
+const (
+	minUsernameLen = 3
+	maxUsernameLen = 32
+	minPasswordLen = 6
+	// bcrypt учитывает только первые 72 байта пароля.
+	maxPasswordBytes = 72
+)
+
 type userLogic struct {
-	userRepository entity.UserRepository
+	repo   entity.UserRepository
+	tokens entity.TokenManager
 }
 
-func NewUserLogic(userRepository entity.UserRepository) entity.UserLogic {
-	return &userLogic{userRepository: userRepository}
+func NewUserLogic(repo entity.UserRepository, tokens entity.TokenManager) entity.UserLogic {
+	return &userLogic{repo: repo, tokens: tokens}
 }
 
-func (u *userLogic) ByFullName(ctx context.Context, username string) (entity.User, error) {
-	return u.userRepository.ByName(ctx, username)
+func (u *userLogic) Register(ctx context.Context, creds entity.Credentials) (entity.User, error) {
+	creds.Username = strings.TrimSpace(creds.Username)
+	if err := validateCredentials(creds); err != nil {
+		return entity.User{}, err
+	}
+
+	hash, err := bcrypt.GenerateFromPassword([]byte(creds.Password), bcrypt.DefaultCost)
+	if err != nil {
+		return entity.User{}, fmt.Errorf("hash password: %w", err)
+	}
+
+	// Уникальность username гарантирует UNIQUE-индекс в БД:
+	// репозиторий вернёт ErrUserAlreadyExists, гонки между проверкой и вставкой нет.
+	user, err := u.repo.Create(ctx, creds.Username, string(hash))
+	if err != nil {
+		return entity.User{}, err
+	}
+
+	return user, nil
 }
 
-func (u *userLogic) ByUserID(ctx context.Context, userID string) (entity.User, error) {
-	return u.userRepository.ByUserID(ctx, userID)
-}
-
-func (u *userLogic) Login(ctx context.Context, user entity.User) (string, error) {
-	log := zap.NewExample().Sugar()
-	userFromDb, err := u.userRepository.ByName(ctx, user.Username)
+func (u *userLogic) Login(ctx context.Context, creds entity.Credentials) (string, error) {
+	user, err := u.repo.ByUsername(ctx, strings.TrimSpace(creds.Username))
+	if errors.Is(err, entity.ErrUserNotFound) {
+		return "", entity.ErrInvalidCredentials
+	}
 	if err != nil {
 		return "", err
 	}
-	if userFromDb.Username == "" {
-		log.Infof("user %s is not exist", user.Username)
-		return "", nil
+
+	if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(creds.Password)); err != nil {
+		return "", entity.ErrInvalidCredentials
 	}
 
-	err = bcrypt.CompareHashAndPassword([]byte(userFromDb.Password), []byte(user.Password))
+	token, err := u.tokens.Generate(user.ID)
 	if err != nil {
-		return "", fmt.Errorf("failed to compare hash password, with error %v", err)
+		return "", fmt.Errorf("generate token: %w", err)
 	}
 
-	claims := &entity.Claims{
-		UserID: userFromDb.ID,
-		RegisteredClaims: jwt.RegisteredClaims{
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(entity.TokenTTL)),
-		},
-	}
-
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	tokenString, err := token.SignedString([]byte(entity.JwtSecret))
-	if err != nil {
-		return "", fmt.Errorf("failed to generate token, with error %v", err)
-	}
-
-	return tokenString, nil
+	return token, nil
 }
 
-func (u *userLogic) Register(ctx context.Context, login entity.User) error {
-	log := zap.NewExample().Sugar()
-	user, err := u.userRepository.ByName(ctx, login.Username)
-	if err != nil {
-		return err
-	}
-	if user.Username != "" {
-		log.Infof("user %s is already exist", login.Username)
-		return nil
-	}
+func (u *userLogic) ByUsername(ctx context.Context, username string) (entity.User, error) {
+	return u.repo.ByUsername(ctx, strings.TrimSpace(username))
+}
 
-	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(login.Password), bcrypt.DefaultCost)
-	if err != nil {
-		return fmt.Errorf("failed to hash password, with error %v", err)
-	}
-	login.Password = string(hashedPassword)
+func (u *userLogic) ByID(ctx context.Context, userID string) (entity.User, error) {
+	return u.repo.ByID(ctx, userID)
+}
 
-	err = u.userRepository.Save(ctx, login)
-	if err != nil {
-		return err
+func validateCredentials(creds entity.Credentials) error {
+	usernameLen := utf8.RuneCountInString(creds.Username)
+	if usernameLen < minUsernameLen || usernameLen > maxUsernameLen {
+		return fmt.Errorf("%w: username must be %d-%d characters", entity.ErrInvalidInput, minUsernameLen, maxUsernameLen)
 	}
-
+	if strings.ContainsAny(creds.Username, " \t\n/") {
+		return fmt.Errorf("%w: username must not contain spaces or '/'", entity.ErrInvalidInput)
+	}
+	if utf8.RuneCountInString(creds.Password) < minPasswordLen {
+		return fmt.Errorf("%w: password must be at least %d characters", entity.ErrInvalidInput, minPasswordLen)
+	}
+	if len(creds.Password) > maxPasswordBytes {
+		return fmt.Errorf("%w: password is too long", entity.ErrInvalidInput)
+	}
 	return nil
 }
