@@ -1,53 +1,61 @@
 package main
 
 import (
-	"context"
-	"messanger/pkg/config"
-	"messanger/pkg/postgres"
+	"embed"
+	"log"
 	"os"
 
-	"github.com/pressly/goose/v3"
+	"messanger/pkg/config"
+	"messanger/pkg/postgres"
 
-	"go.uber.org/zap"
+	"github.com/pressly/goose/v3"
 )
 
 const (
 	migrationsActionEnvKey = "MIGRATIONS_ACTION"
-
-	migrationsActionUp   = "up"
-	migrationsActionDown = "down"
-
-	pathToMigrationsRequests = "./migration_requests"
-	pathToConfig             = "../configs/local.json"
+	migrationsDir          = "migration_requests"
 )
 
+// SQL-файлы вшиваются в бинарник, поэтому мигратор не зависит от рабочей директории.
+//
+//go:embed migration_requests/*.sql
+var migrationsFS embed.FS
+
 func main() {
-	log := zap.NewExample()
-	config, err := config.InitConfig(pathToConfig)
+	cfg, err := config.Load()
 	if err != nil {
-		log.Sugar().DPanicf("cant init config: %v", err)
+		log.Fatalf("load config: %v", err)
 	}
 
-	ctx := context.Background()
-
-	db, err := postgres.NewDB(ctx, config)
+	db, err := postgres.NewDB(cfg.Postgres)
 	if err != nil {
-		log.Sugar().Fatalf("cant create connection for postgres: %v", err)
+		log.Fatalf("connect to postgres: %v", err)
 	}
 	defer db.Close()
 
-	switch os.Getenv(migrationsActionEnvKey) {
-	case migrationsActionUp:
-		if err := goose.Up(db, pathToMigrationsRequests); err != nil {
-			log.Sugar().Fatalf("migration up is failed: %v", err)
-		}
-	case migrationsActionDown:
-		if err := goose.Down(db, pathToMigrationsRequests); err != nil {
-			log.Sugar().Fatalf("migration down is failed: %v", err)
-		}
-	default:
-		log.Error("migrations action is unknown")
-		return
+	goose.SetBaseFS(migrationsFS)
+	if err := goose.SetDialect("postgres"); err != nil {
+		log.Fatalf("set goose dialect: %v", err)
 	}
-	log.Info("migrations is complete")
+
+	action := os.Getenv(migrationsActionEnvKey)
+	if action == "" {
+		action = "up"
+	}
+
+	switch action {
+	case "up":
+		err = goose.Up(db, migrationsDir)
+	case "down":
+		err = goose.Down(db, migrationsDir)
+	case "status":
+		err = goose.Status(db, migrationsDir)
+	default:
+		log.Fatalf("unknown %s=%q, expected up|down|status", migrationsActionEnvKey, action)
+	}
+	if err != nil {
+		log.Fatalf("migrations %s failed: %v", action, err)
+	}
+
+	log.Printf("migrations %s completed", action)
 }

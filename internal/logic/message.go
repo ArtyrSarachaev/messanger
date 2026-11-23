@@ -2,69 +2,92 @@ package logic
 
 import (
 	"context"
-	"messanger/internal/entity"
+	"fmt"
+	"strings"
+	"unicode/utf8"
 
-	"github.com/pkg/errors"
+	"messanger/internal/entity"
 )
 
 const (
-	formatTimeForResponse = "2006-01-02 15:04:05"
+	DefaultDialogLimit = 50
+	MaxDialogLimit     = 200
 )
 
 type messageLogic struct {
-	userLogic   entity.UserLogic
-	messageRepo entity.MessageRepository
+	repo      entity.MessageRepository
+	userLogic entity.UserLogic
 }
 
-func NewMessageLogic(msgRepo entity.MessageRepository, userLogic entity.UserLogic) entity.MessageLogic {
-	return &messageLogic{
-		userLogic:   userLogic,
-		messageRepo: msgRepo,
-	}
+func NewMessageLogic(repo entity.MessageRepository, userLogic entity.UserLogic) entity.MessageLogic {
+	return &messageLogic{repo: repo, userLogic: userLogic}
 }
 
-func (m *messageLogic) ByName(ctx context.Context, username string) ([]entity.MessageForResponse, error) {
-	user1, err := m.userLogic.ByFullName(ctx, username)
-	if err != nil || user1.ID == "" {
-		return nil, errors.Wrapf(err, "cant get user by username %v", username)
-	}
-
-	userID2, ok := ctx.Value(entity.UserIDKey).(string)
-	if !ok {
-		return nil, errors.New("cant get user id from context")
-	}
-
-	user2, err := m.userLogic.ByUserID(ctx, userID2)
-	if err != nil || user2.ID == "" || user2.Username == username {
-		return nil, errors.Wrapf(err, "cant get user by user id %v", userID2)
-	}
-
-	messages, err := m.messageRepo.AllByUserIDs(ctx, user1.ID, user2.ID)
-	if err != nil {
-		return nil, errors.Wrapf(err, "cant get all messages by users %v", username)
-	}
-
-	messagesResp := make([]entity.MessageForResponse, 0, len(messages))
-	for _, messageFromDB := range messages {
-		messageResp := entity.MessageForResponse{
-			Text:       messageFromDB.Text,
-			TimeToSend: messageFromDB.TimeToSend.Format(formatTimeForResponse),
-		}
-
-		if messageFromDB.SenderID == user1.ID {
-			messageResp.SenderName = user1.Username
-			messageResp.ReceiverName = user2.Username
-		} else {
-			messageResp.SenderName = user2.Username
-			messageResp.ReceiverName = user1.Username
-		}
-
-		messagesResp = append(messagesResp, messageResp)
-	}
-
-	return messagesResp, nil
-}
-
+// Save сохраняет сообщение, прочитанное из Kafka.
 func (m *messageLogic) Save(ctx context.Context, message entity.Message) error {
-	return m.messageRepo.Save(ctx, message)
+	if err := ValidateMessage(message); err != nil {
+		return err
+	}
+	return m.repo.Save(ctx, message)
+}
+
+// Dialog возвращает переписку текущего пользователя с companion (по username),
+// от новых сообщений к старым.
+func (m *messageLogic) Dialog(ctx context.Context, currentUserID, companion string, limit, offset int) ([]entity.MessageView, error) {
+	limit, offset = normalizePage(limit, offset)
+
+	me, err := m.userLogic.ByID(ctx, currentUserID)
+	if err != nil {
+		return nil, fmt.Errorf("get current user: %w", err)
+	}
+
+	other, err := m.userLogic.ByUsername(ctx, companion)
+	if err != nil {
+		return nil, err
+	}
+
+	messages, err := m.repo.Dialog(ctx, me.ID, other.ID, limit, offset)
+	if err != nil {
+		return nil, fmt.Errorf("get dialog: %w", err)
+	}
+
+	names := map[string]string{me.ID: me.Username, other.ID: other.Username}
+
+	views := make([]entity.MessageView, 0, len(messages))
+	for _, msg := range messages {
+		views = append(views, entity.MessageView{
+			From:      names[msg.SenderID],
+			To:        names[msg.ReceiverID],
+			Text:      msg.Text,
+			CreatedAt: msg.CreatedAt,
+		})
+	}
+
+	return views, nil
+}
+
+func ValidateMessage(message entity.Message) error {
+	if message.SenderID == "" || message.ReceiverID == "" {
+		return fmt.Errorf("%w: sender and receiver are required", entity.ErrInvalidInput)
+	}
+	if strings.TrimSpace(message.Text) == "" {
+		return fmt.Errorf("%w: message is empty", entity.ErrInvalidInput)
+	}
+	if utf8.RuneCountInString(message.Text) > entity.MaxMessageLength {
+		return fmt.Errorf("%w: message is longer than %d characters", entity.ErrInvalidInput, entity.MaxMessageLength)
+	}
+	return nil
+}
+
+func normalizePage(limit, offset int) (int, int) {
+	if limit <= 0 {
+		limit = DefaultDialogLimit
+	}
+	if limit > MaxDialogLimit {
+		limit = MaxDialogLimit
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	return limit, offset
 }

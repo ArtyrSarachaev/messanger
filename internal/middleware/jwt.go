@@ -1,49 +1,53 @@
 package middleware
 
 import (
-	"context"
-	"messanger/internal/entity"
 	"net/http"
 	"strings"
 
-	"github.com/golang-jwt/jwt/v5"
+	"messanger/internal/entity"
+
 	"github.com/labstack/echo/v4"
 )
 
-func JWTMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
-	return func(c echo.Context) error {
-		authHeader := c.Request().Header.Get("Authorization")
-		if authHeader == "" {
-			return echo.NewHTTPError(http.StatusUnauthorized, "missing authorization header")
+const tokenQueryParam = "token"
+
+// JWT проверяет токен и кладёт ID пользователя в контекст запроса.
+// Токен берётся из заголовка "Authorization: Bearer <token>",
+// а если его нет — из query-параметра ?token= (браузерный WebSocket не умеет
+// передавать заголовки).
+func JWT(tokens entity.TokenManager) echo.MiddlewareFunc {
+	return func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c echo.Context) error {
+			tokenString, ok := extractToken(c.Request())
+			if !ok {
+				return echo.NewHTTPError(http.StatusUnauthorized, "missing token")
+			}
+
+			userID, err := tokens.Parse(tokenString)
+			if err != nil {
+				return echo.NewHTTPError(http.StatusUnauthorized, "invalid token")
+			}
+
+			ctx := entity.WithUserID(c.Request().Context(), userID)
+			c.SetRequest(c.Request().WithContext(ctx))
+
+			return next(c)
 		}
-
-		tokenString := strings.TrimPrefix(authHeader, "Bearer ")
-		if tokenString == authHeader {
-			return echo.NewHTTPError(http.StatusUnauthorized, "invalid token format")
-		}
-
-		token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
-			return []byte(entity.JwtSecret), nil
-		})
-
-		if err != nil || !token.Valid {
-			return echo.NewHTTPError(http.StatusUnauthorized, "invalid token")
-		}
-
-		claims, ok := token.Claims.(jwt.MapClaims)
-		if !ok {
-			return echo.NewHTTPError(http.StatusUnauthorized, "unknown user")
-		}
-
-		userID, ok := claims[entity.UserIDKey].(string)
-		if !ok {
-			return echo.NewHTTPError(http.StatusUnauthorized, "cant get username from jwt")
-		}
-
-		ctx := context.WithValue(c.Request().Context(), entity.UserIDKey, userID)
-
-		c.SetRequest(c.Request().WithContext(ctx))
-
-		return next(c)
 	}
+}
+
+func extractToken(r *http.Request) (string, bool) {
+	if header := r.Header.Get(echo.HeaderAuthorization); header != "" {
+		token, found := strings.CutPrefix(header, "Bearer ")
+		if !found || token == "" {
+			return "", false
+		}
+		return token, true
+	}
+
+	if token := r.URL.Query().Get(tokenQueryParam); token != "" {
+		return token, true
+	}
+
+	return "", false
 }

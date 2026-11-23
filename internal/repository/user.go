@@ -2,74 +2,82 @@ package repository
 
 import (
 	"context"
-	"database/sql"
+	"errors"
 	"fmt"
+
 	"messanger/internal/entity"
 
-	"github.com/gofrs/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/pkg/errors"
 )
 
+const uniqueViolationCode = "23505"
+
 type userRepository struct {
-	poolPG *pgxpool.Pool
+	pool *pgxpool.Pool
 }
 
-func NewUserRepository(poolPG *pgxpool.Pool) entity.UserRepository {
-	return &userRepository{poolPG: poolPG}
+func NewUserRepository(pool *pgxpool.Pool) entity.UserRepository {
+	return &userRepository{pool: pool}
 }
 
-func (u *userRepository) Save(ctx context.Context, userLogin entity.User) error {
-	query := fmt.Sprintf(`INSERT INTO users (username, "password", created_at) VALUES ($1, $2, $3)`)
+func (r *userRepository) Create(ctx context.Context, username, passwordHash string) (entity.User, error) {
+	const query = `
+		INSERT INTO users (username, password)
+		VALUES ($1, $2)
+		RETURNING id::text, username, password, created_at`
 
-	_, err := u.poolPG.Exec(ctx, query, userLogin.Username, userLogin.Password, userLogin.CreatedAt)
+	user, err := scanUser(r.pool.QueryRow(ctx, query, username, passwordHash))
 	if err != nil {
-		return errors.Wrapf(err, "cant save user with username %v", userLogin.Username)
-	}
-	return nil
-}
-
-func (u *userRepository) ByName(ctx context.Context, username string) (entity.User, error) {
-	var (
-		user   entity.User
-		respID uuid.UUID
-	)
-
-	query := fmt.Sprintf(`SELECT u.id, u.username, u."password", u.created_at FROM users u WHERE u.username=$1`)
-
-	err := u.poolPG.QueryRow(ctx, query, username).Scan(&respID, &user.Username, &user.Password, &user.CreatedAt)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return entity.User{}, nil
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == uniqueViolationCode {
+			return entity.User{}, entity.ErrUserAlreadyExists
 		}
-		return entity.User{}, errors.Wrapf(err, "cant get user by name %v", username)
+		return entity.User{}, fmt.Errorf("create user %q: %w", username, err)
 	}
-	user.ID = respID.String()
 
 	return user, nil
 }
 
-func (u *userRepository) ByUserID(ctx context.Context, userID string) (entity.User, error) {
-	var (
-		user   entity.User
-		respID uuid.UUID
-	)
+func (r *userRepository) ByUsername(ctx context.Context, username string) (entity.User, error) {
+	const query = `
+		SELECT id::text, username, password, created_at
+		FROM users
+		WHERE username = $1`
 
-	query := fmt.Sprintf(`SELECT u.id, u.username, u."password", u.created_at FROM users u WHERE u.id=$1`)
-
-	id, err := uuid.FromString(userID)
+	user, err := scanUser(r.pool.QueryRow(ctx, query, username))
 	if err != nil {
-		return entity.User{}, errors.Wrapf(err, "cant parse id %v to uuid", userID)
-	}
-	err = u.poolPG.QueryRow(ctx, query, id).Scan(&respID, &user.Username, &user.Password, &user.CreatedAt)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return entity.User{}, nil
+		if errors.Is(err, pgx.ErrNoRows) {
+			return entity.User{}, entity.ErrUserNotFound
 		}
-		return entity.User{}, errors.Wrapf(err, "cant get user by user id %v", userID)
+		return entity.User{}, fmt.Errorf("get user by username %q: %w", username, err)
 	}
-	user.ID = respID.String()
 
 	return user, nil
+}
 
+func (r *userRepository) ByID(ctx context.Context, userID string) (entity.User, error) {
+	const query = `
+		SELECT id::text, username, password, created_at
+		FROM users
+		WHERE id = $1::uuid`
+
+	user, err := scanUser(r.pool.QueryRow(ctx, query, userID))
+	if err != nil {
+		var pgErr *pgconn.PgError
+		// Некорректный UUID (22P02) считаем отсутствующим пользователем.
+		if errors.Is(err, pgx.ErrNoRows) || (errors.As(err, &pgErr) && pgErr.Code == "22P02") {
+			return entity.User{}, entity.ErrUserNotFound
+		}
+		return entity.User{}, fmt.Errorf("get user by id %q: %w", userID, err)
+	}
+
+	return user, nil
+}
+
+func scanUser(row pgx.Row) (entity.User, error) {
+	var user entity.User
+	err := row.Scan(&user.ID, &user.Username, &user.Password, &user.CreatedAt)
+	return user, err
 }

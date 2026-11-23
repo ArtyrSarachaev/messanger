@@ -1,4 +1,8 @@
 .vscode
+.idea
 .VSCodeCounter
-.cmd\*.exe
-.gitattributes
+.env
+*.exe
+/bin
+/messanger
+coverage.out
